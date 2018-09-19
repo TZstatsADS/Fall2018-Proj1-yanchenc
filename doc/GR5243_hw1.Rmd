@@ -1,0 +1,284 @@
+---
+title: "GR5243"
+author: "Chen, Yanchen"
+date: "September 18, 2018"
+output:
+  html_document:
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+
+```{r warning=FALSE}
+version 
+library(stringr)
+library(Matrix)
+library(ggplot2)
+library(tm)
+library(mclust)
+library(tidyverse)
+library(tidytext)
+library(DT)
+library(scales)
+library(dplyr)
+library(wordcloud)
+library(RColorBrewer)
+library(gridExtra)
+library(plotly)
+library(ngram)
+library(shiny) 
+library(gplots)
+library(mclust)
+library(cluster)
+library(fpc)
+```
+
+```{r load data, warning=FALSE, message=FALSE}
+hm_data <- read_csv("processed_moments.csv")
+
+urlfile<-'https://raw.githubusercontent.com/rit-public/HappyDB/master/happydb/data/demographic.csv'
+demo_data <- read_csv(urlfile)
+```
+
+### Combine both the data sets and keep the required columns for analysis
+
+We select a subset of the data that satisfies specific row conditions.
+just data processing with the help of course materials
+```{r combining data, warning=FALSE, message=FALSE}
+data <- hm_data %>%
+  inner_join(demo_data, by = "wid") %>%
+  select(wid,
+         original_hm,
+         gender, 
+         marital, 
+         parenthood,
+         reflection_period,
+         age, 
+         country, 
+         ground_truth_category, 
+         text) %>%
+  mutate(count = sapply(hm_data$text, wordcount)) %>%
+  filter(gender %in% c("m", "f")) %>%
+  filter(marital %in% c("single", "married")) %>%
+  filter(parenthood %in% c("n", "y")) %>%
+  filter(reflection_period %in% c("24h", "3m")) %>%
+  mutate(reflection_period = fct_recode(reflection_period, 
+                                        months_3 = "3m", hours_24 = "24h"))
+```
+
+```{ bag of words, warning=FALSE, message=FALSE}
+bag_of_words <-  data %>%
+  unnest_tokens(word, text)
+
+word_count <- bag_of_words %>%
+  count(word, sort = TRUE)
+```
+
+
+```{}
+hm_bigrams <- data %>%
+  filter(count != 1) %>%
+  unnest_tokens(bigram, text, token = "ngrams", n = 2)
+
+bigram_counts <- hm_bigrams %>%
+  separate(bigram, c("word1", "word2"), sep = " ") %>%
+  count(word1, word2, sort = TRUE)
+
+```
+
+A brief on how detail about desription of happy moments
+```{r}
+
+data$sentence_length <- as.vector(sapply(data$original_hm, wordcount))
+```
+#In order to find how the country influeces the happy moments, I extract the top 10% nations with the most happy moments in the data. According to the histgram, it is obvious to see that USA and INA dominant more than 95% happy moments from the data. 
+```{r warning=FALSE}
+country <- unique(data$country)
+country_number <- matrix(nrow = length(country),ncol = 2)
+
+for (i in 1:length(country)) {
+  country_number[i,1] <- country[i]
+  country_number[i,2] <- as.numeric(length(which(data[,"country"] == country[i])))
+}
+
+
+country_number <- country_number[order(as.numeric(country_number[,2]),decreasing = T),]
+top10 <- country_number[1:10,]
+top10_nations <- top10[,1]
+ggplot(data = data, aes(x = data$country, fill = data$country)) + 
+  geom_bar(position = position_stack(reverse = T)) +
+  coord_flip() +
+  ggtitle("Top 10% nations with most happy moments") +
+  scale_x_discrete(limits = top10[,1]) +
+  xlab("Nations") +
+  ylab("Number of happy moments") 
+
+
+
+```
+Then it is appropriate to refine the data with these top 10% nations so that the computational cost could be minimized.Based on the word cloud, we can tell these 10 nations have pretty similar frenquent words used in their happy moments description. Therefore, it is reasonable to consider the same activity may result into a happy moment, no matter what their nationalities are. 
+```{r bag of words, warning=FALSE, message=FALSE}
+#most popular work in happy moments for top 10 nations
+set.seed(12345)
+par(mfrow = c(3,2))
+word_count_list <- list()
+for (i in 1:length(top10_nations)) {
+  bag_of_words_tmp <-  data[which(data$country == top10_nations[i]),] %>%
+  unnest_tokens(word, text)
+
+word_count_tmp <- bag_of_words_tmp %>%
+  count(word, sort = TRUE)
+word_count_list[top10_nations[i]] <- list(word_count_tmp)
+wordcloud(data.frame(word_count_list[top10_nations[i]][[1]])$word, 
+          data.frame(word_count_list[top10_nations[i]][[1]])$n,
+          scale=c(3,0.1),
+          max.words=50,
+          min.freq=1,
+          random.order=FALSE,
+          rot.per=0.1,
+          use.r.layout=T,
+          random.color=T,
+          colors=brewer.pal(11, "Set3"),
+          main = cat("The Most used words for ",  top10_nations[i], "\n"))
+a<-data.frame(word_count_list[top10_nations[i]][[1]])$n[1:20]
+b<-data.frame(word_count_list[top10_nations[i]][[1]])$word[1:20]
+barplot(a, las = 2,names.arg = b,
+        col ="lightblue", main = cat("Most frequent words for ", top10_nations[i]),
+        ylab = "Word frequencies") 
+}
+ 
+
+
+```
+
+Furthermore, it is necessary to take parenthood and marital into consideration. In this case, there may be four different situations. 
+```{r}
+# married and having children
+data_y_y <- data[which(data$marital == "married" & data$parenthood == "y"),]
+bag_of_words_yy <-  data_y_y %>%
+  unnest_tokens(word, text)
+
+word_count_yy <- bag_of_words_yy %>%
+  count(word, sort = TRUE)
+# married and no child
+data_y_n <- data[which(data$marital == "married" & data$parenthood == "n"),]
+bag_of_words_yn <-  data_y_n %>%
+  unnest_tokens(word, text)
+
+word_count_yn <- bag_of_words_yn %>%
+  count(word, sort = TRUE)
+# single and having children
+data_n_y <- data[which(data$marital == "single" & data$parenthood == "y"),]
+bag_of_words_ny <-  data_n_y %>%
+  unnest_tokens(word, text)
+
+word_count_ny <- bag_of_words_ny %>%
+  count(word, sort = TRUE)
+# single and no child
+data_n_n <- data[which(data$marital == "single" & data$parenthood == "n"),]
+bag_of_words_nn <-  data_n_n %>%
+  unnest_tokens(word, text)
+
+word_count_nn <- bag_of_words_nn %>%
+  count(word, sort = TRUE)
+
+
+
+
+
+
+
+```
+After taking the 11 most popular words from the commonly shared words by 10 nations, it is confident to declaim that people with married and no child are more likely to record their happy moments, which implys they may be more spare. 
+```{r}
+
+# find the most popular words shared by all 10 nations
+for(i in 1:9){
+  mergedata <- merge(data.frame(word_count_list[top10_nations[i]][[1]])[1:30,], 
+                     data.frame(word_count_list[top10_nations[i + 1]][[1]])[1:30,], by = "word")
+}
+top10words <- mergedata[,1]
+# standardize data for heatmap
+word_count_yy$yy_hm <- scale(word_count_yy[,2])
+word_count_yn$yn_hm <- scale(word_count_yn[,2])
+word_count_ny$ny_hm <- scale(word_count_ny[,2])
+word_count_nn$nn_hm <- scale(word_count_nn[,2])
+#generating the heatmap()
+yy <- c()
+yn <- data.frame()
+ny <- data.frame()
+nn <- data.frame()
+#for (i in 1:length(top10words)) {
+  yy[i,] <- data.frame(word_count_yy[which(word_count_yy$word == top10words[i]),c(1,3)])
+  yn[i,] <- data.frame(word_count_yn[which(word_count_yy$word == top10words[i]),c(1,3)])  
+  ny[i,] <- data.frame(word_count_ny[which(word_count_yy$word == top10words[i]),c(1,3)])  
+  nn[i,] <- data.frame(word_count_nn[which(word_count_yy$word == top10words[i]),c(1,3)])
+
+}
+  hmdata <- matrix(c(as.numeric(yy[,2]), as.numeric(yn[,2]), as.numeric(ny[,2]), as.numeric(nn[,2])), 2, 2, byrow = F)
+  colnames(hmdata) <- c("single", "no child")
+  rownames(hmdata) <- c("married", "having children")
+heatmap.2(hmdata,dendrogram = "none", srtCol = 0, adjRow = 1.4)
+  
+```
+Since the wid is the same, so it could be from the same place. after make all wid unique, we can apply cluster model to fit important factors
+```{r}
+id <- unique(data$wid)
+test <- na.omit(data[id,])
+test <- scale(test[,c(12,11)])
+wss <- (nrow(test) - 1)*sum(apply(test,2,var))
+for (i in 2:15) wss[i] <- sum(kmeans(test, 
+  	centers = i)$withinss)
+plot(1:15, wss, type = "b", xlab = "Number of Clusters",
+  ylab = "Within groups sum of squares")
+fit <- kmeans(test, 10)
+aggregate(test,by = list(fit$cluster),FUN = mean)
+clusplot(test, fit$cluster, color = TRUE, shade = TRUE, 
+  	labels = 2, lines = 0)
+mydata <- data.frame(test, fit$cluster)
+fit1 <- Mclust(test)
+plot(fit1)
+```
+  
+In conclusion, this set of data shows 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
